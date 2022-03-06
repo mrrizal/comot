@@ -1,22 +1,105 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
-	"time"
+	"path"
 
-	"github.com/valyala/fasthttp"
+	"github.com/gosuri/uiprogress"
+	"github.com/mrrizal/comot/utils"
+	"golang.org/x/sync/errgroup"
 )
 
-var client *fasthttp.Client
+func worker(workerID int64, w io.WriterAt, urlInput string, off, limit int64) error {
+	counter := utils.ProgressBarSetup(off, limit, fmt.Sprintf("worker %d:", workerID))
+
+	req, err := http.NewRequest("GET", urlInput, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, limit))
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusPartialContent {
+		err = fmt.Errorf("server responded with %d status code, expected %d", resp.StatusCode,
+			http.StatusPartialContent)
+		return err
+	}
+
+	_, err = io.Copy(utils.NewWriter(w, off), io.TeeReader(resp.Body, counter))
+	return err
+}
+
+func is_valid_url(urlInput string) (*http.Response, error) {
+	resp, err := http.Head(urlInput)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server responsed with %d status code, expected %d", resp.StatusCode, http.StatusOK)
+	}
+
+	if resp.Header.Get("Accept-Ranges") != "bytes" {
+		return nil, errors.New("server doest not support range requests")
+	}
+
+	return resp, nil
+}
+
+func comot(urlInput string, concurent int64) {
+	resp, err := is_valid_url(urlInput)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	contentLength := resp.ContentLength
+	if contentLength <= 0 {
+		log.Fatal(errors.New("server sent invalid Content-Length Header"))
+	}
+
+	filename := path.Base(resp.Request.URL.Path)
+	f, err := utils.CreateFile(filename)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	uiprogress.Start()
+	chunkSize := int64(contentLength) / concurent
+	counter := int64(0)
+	var g errgroup.Group
+	for i := int64(0); i < int64(contentLength); i += chunkSize {
+		offset := i
+		limit := i + chunkSize
+		if limit > int64(contentLength) {
+			limit = int64(contentLength)
+		}
+
+		g.Go(func() error {
+			counter++
+			return worker(counter, f, urlInput, offset, limit)
+		})
+	}
+	if err := g.Wait(); err != nil {
+		log.Fatal(err)
+	}
+}
 
 func main() {
 	var urlInput string
-	var concurrent int
+	var concurrent int64
 	flag.StringVar(&urlInput, "url", "", "url")
-	flag.IntVar(&concurrent, "concurrent", 1, "concurrent")
+	flag.Int64Var(&concurrent, "concurrent", 1, "concurrent")
 	flag.Parse()
 
 	if urlInput == "" {
@@ -28,51 +111,5 @@ func main() {
 		log.Fatal(err.Error())
 	}
 
-	readTimeout, _ := time.ParseDuration("500ms")
-	writeTimeout, _ := time.ParseDuration("500ms")
-	maxIdleConnDuration, _ := time.ParseDuration("1h")
-	client = &fasthttp.Client{
-		ReadTimeout:                   readTimeout,
-		WriteTimeout:                  writeTimeout,
-		MaxIdleConnDuration:           maxIdleConnDuration,
-		NoDefaultUserAgentHeader:      true, // Don't send: User-Agent: fasthttp
-		DisableHeaderNamesNormalizing: true, // If you set the case on your headers correctly you can enable this
-		DisablePathNormalizing:        true,
-		// increase DNS cache time to an hour instead of default minute
-		Dial: (&fasthttp.TCPDialer{
-			Concurrency:      4096,
-			DNSCacheDuration: time.Hour,
-		}).Dial,
-	}
-
 	comot(urlInput, concurrent)
-}
-
-func comot(urlInput string, concurent int) {
-	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(urlInput)
-	req.Header.SetMethod(fasthttp.MethodHead)
-	resp := fasthttp.AcquireResponse()
-	err := client.Do(req, resp)
-	fasthttp.ReleaseRequest(req)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-	contentLenght := resp.Header.ContentLength()
-	fasthttp.ReleaseResponse(resp)
-
-	if contentLenght <= 0 {
-		log.Fatal("server sent invalid Content-Length Header")
-	}
-
-	chunkSize := contentLenght / concurent
-	for i := 0; i < contentLenght; i += chunkSize {
-		offset := i
-		limit := i + chunkSize
-		if limit > contentLenght {
-			limit = contentLenght
-		}
-		fmt.Printf("offset %d, limit %d\n", offset, limit)
-	}
-	fmt.Println(contentLenght)
 }
