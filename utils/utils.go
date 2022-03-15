@@ -1,8 +1,10 @@
 package utils
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/gosuri/uiprogress"
 )
@@ -42,10 +44,14 @@ func (wc *WriteCounter) Write(p []byte) (int, error) {
 func ProgressBarSetup(offset, limit int64, name string) *WriteCounter {
 	steps := limit - offset
 	counter := &WriteCounter{}
-	counter.Bar = uiprogress.AddBar(int(steps)).PrependCompleted().AppendCompleted()
+	counter.Bar = uiprogress.AddBar(int(steps))
+	counter.Bar.AppendCompleted()
 	counter.Bar.Total = int(steps)
+	startTime := time.Now()
 	counter.Bar.PrependFunc(func(b *uiprogress.Bar) string {
-		return name
+		second := time.Now().Sub(startTime).Seconds()
+		downloadSpeed := float64(b.Current()) / second / 1024
+		return fmt.Sprintf("%s %.1f kbps", name, downloadSpeed)
 	})
 	return counter
 }
