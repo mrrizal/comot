@@ -10,9 +10,7 @@ import (
 	"net/url"
 	"path"
 	"sync"
-	"time"
 
-	"github.com/gosuri/uiprogress"
 	"github.com/mrrizal/comot/utils"
 )
 
@@ -20,7 +18,6 @@ func worker(wg *sync.WaitGroup, counterStream chan utils.CounterStream, workerID
 	off, limit int) error {
 	defer wg.Done()
 
-	log.Printf("start worker %d, limit: %d, offset %d, step: %d\n", workerID, limit, off, limit-off)
 	req, err := http.NewRequest("GET", urlInput, nil)
 	if err != nil {
 		return err
@@ -60,27 +57,6 @@ func is_valid_url(urlInput string) (*http.Response, error) {
 	return resp, nil
 }
 
-type LimitOffsetData struct {
-	Limit  int
-	Offset int
-}
-
-func countLimitOffset(contentLength, concurrent int) map[int]LimitOffsetData {
-	result := make(map[int]LimitOffsetData)
-	chunkSize := contentLength / concurrent
-	counter := 1
-	for i := 0; i < contentLength; i += chunkSize {
-		offset := i
-		limit := i + chunkSize
-		if limit > contentLength {
-			limit = contentLength
-		}
-		result[counter] = LimitOffsetData{Offset: offset, Limit: limit}
-		counter++
-	}
-	return result
-}
-
 func comot(urlInput string, concurrent int) {
 	// check is valid url
 	resp, err := is_valid_url(urlInput)
@@ -103,12 +79,12 @@ func comot(urlInput string, concurrent int) {
 	defer f.Close()
 
 	counterStream := make(chan utils.CounterStream)
+	limitOfssetData := utils.CountLimitOffset(contentLength, concurrent)
+	bars := utils.SetupProgressBar(concurrent, limitOfssetData)
 
-	limitOfssetData := countLimitOffset(contentLength, concurrent)
+	// run worker
 	go func() {
 		defer close(counterStream)
-
-		// run worker
 		var wg sync.WaitGroup
 		for key, value := range limitOfssetData {
 			wg.Add(1)
@@ -117,25 +93,12 @@ func comot(urlInput string, concurrent int) {
 		wg.Wait()
 	}()
 
-	uiprogress.Start()
-	var bars []*uiprogress.Bar
-	for key, value := range limitOfssetData {
-		fmt.Println(key)
-		bar := uiprogress.AddBar(value.Limit - value.Offset).AppendCompleted().PrependElapsed()
-		startTime := time.Now()
-		bar.PrependFunc(func(b *uiprogress.Bar) string {
-			second := time.Since(startTime).Seconds()
-			downloadSpeed := float64(b.Current()) / second / 1024
-			return fmt.Sprintf("%s %.1f kbps", fmt.Sprintf("worker %d", key), downloadSpeed)
-		})
-		bars = append(bars, bar)
-	}
-
-	temp := make(map[int]int)
+	tracker := make(map[int]int)
 	for i := range counterStream {
-		temp[i.ID] += i.Data
+		key := i.ID - 1
+		tracker[key] += i.Data
+		bars[key].Set(tracker[key])
 	}
-	fmt.Println(temp)
 }
 
 func main() {
