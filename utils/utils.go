@@ -107,7 +107,10 @@ func WritePartFile(tracker map[int]int, filename string, limitfOffsetData map[in
 		}
 		defer f.Close()
 
-		_, err = f.WriteString(fmt.Sprintf("%s,%s", strconv.Itoa(value), strconv.Itoa(limitfOffsetData[key].Offset)))
+		_, err = f.WriteString(
+			fmt.Sprintf("%s,%s",
+				strconv.Itoa(limitfOffsetData[key].Offset+value),
+				strconv.Itoa(limitfOffsetData[key].Limit)))
 		if err != nil {
 			return err
 		}
