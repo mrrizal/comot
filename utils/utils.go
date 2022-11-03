@@ -1,11 +1,14 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gosuri/uiprogress"
@@ -46,6 +49,50 @@ func (w *writer) Write(p []byte) (n int, err error) {
 func CreateFile(filename string) (*os.File, error) {
 	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0600)
 	return f, err
+}
+
+func HasPartFile(filename string, concurrent int) bool {
+	results := []bool{}
+	for i := 0; i < concurrent; i++ {
+		partFilename := fmt.Sprintf("%s_%d.part", filename, i)
+		if _, err := os.Stat(partFilename); errors.Is(err, os.ErrNotExist) {
+			results = append(results, false)
+		} else {
+			results = append(results, true)
+		}
+	}
+
+	for _, result := range results {
+		if result && (len(results) == concurrent) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func ParsePartFile(filename string, concurrent int) (map[int]LimitOffsetData, error) {
+	result := make(map[int]LimitOffsetData)
+	for i := 0; i < concurrent; i++ {
+		partFilename := fmt.Sprintf("%s_%d.part", filename, i)
+		data, err := ioutil.ReadFile(partFilename)
+		if err != nil {
+			return nil, err
+		}
+
+		offset, err := strconv.Atoi(strings.Split(string(data), ",")[0])
+		if err != nil {
+			return nil, err
+		}
+
+		limit, err := strconv.Atoi(strings.Split(string(data), ",")[1])
+		if err != nil {
+			return nil, err
+		}
+
+		result[i] = LimitOffsetData{Offset: offset, Limit: limit}
+	}
+	return result, nil
 }
 
 func CountLimitOffset(contentLength, concurrent int) map[int]LimitOffsetData {

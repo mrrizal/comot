@@ -87,8 +87,18 @@ func comot(urlInput string, concurrent int) error {
 	defer f.Close()
 
 	counterStream := make(chan utils.CounterStream)
-	limitOfssetData := utils.CountLimitOffset(contentLength, concurrent)
-	bars := utils.SetupProgressBar(concurrent, limitOfssetData)
+	hasPartFile := utils.HasPartFile(filename, concurrent)
+	limitOffsetData := utils.CountLimitOffset(contentLength, concurrent)
+
+	var partFileData map[int]utils.LimitOffsetData
+	if hasPartFile {
+		partFileData, err = utils.ParsePartFile(filename, concurrent)
+		if err != nil {
+			return err
+		}
+	}
+
+	bars := utils.SetupProgressBar(concurrent, limitOffsetData)
 
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt)
@@ -98,7 +108,7 @@ func comot(urlInput string, concurrent int) error {
 	go func() {
 		select {
 		case <-c:
-			utils.WritePartFile(tracker, filename, limitOfssetData)
+			utils.WritePartFile(tracker, filename, limitOffsetData)
 			os.Exit(1)
 		}
 	}()
@@ -107,7 +117,14 @@ func comot(urlInput string, concurrent int) error {
 	go func() {
 		defer close(counterStream)
 		var wg sync.WaitGroup
-		for key, value := range limitOfssetData {
+		var data map[int]utils.LimitOffsetData
+		if hasPartFile {
+			data = partFileData
+		} else {
+			data = limitOffsetData
+		}
+
+		for key, value := range data {
 			wg.Add(1)
 			go worker(&wg, counterStream, key, f, urlInput, value.Offset, value.Limit)
 		}
@@ -115,19 +132,31 @@ func comot(urlInput string, concurrent int) error {
 	}()
 
 	for i := range counterStream {
+		if hasPartFile {
+			if bars[i.ID].Current() == 0 {
+				tracker[i.ID] += partFileData[i.ID].Offset - limitOffsetData[i.ID].Offset
+				bars[i.ID].Set(partFileData[i.ID].Offset - limitOffsetData[i.ID].Offset)
+			}
+		}
+
 		tracker[i.ID] += i.Data
 		bars[i.ID].Set(tracker[i.ID])
 	}
 
 	inCompleteDownload := false
 	for key, value := range tracker {
-		if value < (limitOfssetData[key].Limit - limitOfssetData[key].Offset) {
+		if value < (limitOffsetData[key].Limit - limitOffsetData[key].Offset) {
 			inCompleteDownload = true
 		}
 	}
 
 	if inCompleteDownload {
-		utils.WritePartFile(tracker, filename, limitOfssetData)
+		utils.WritePartFile(tracker, filename, limitOffsetData)
+	} else {
+		err := utils.DeletePartFile()
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
