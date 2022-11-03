@@ -14,6 +14,11 @@ import (
 	"github.com/mrrizal/comot/utils"
 )
 
+type Tracker struct {
+	SaveToFile bool
+	Tracker    map[int]int
+}
+
 func worker(wg *sync.WaitGroup, counterStream chan utils.CounterStream, workerID int, w io.WriterAt, urlInput string,
 	off, limit int) error {
 	defer wg.Done()
@@ -42,7 +47,7 @@ func worker(wg *sync.WaitGroup, counterStream chan utils.CounterStream, workerID
 func is_valid_url(urlInput string) (*http.Response, error) {
 	resp, err := http.Head(urlInput)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -57,24 +62,24 @@ func is_valid_url(urlInput string) (*http.Response, error) {
 	return resp, nil
 }
 
-func comot(urlInput string, concurrent int) {
+func comot(urlInput string, concurrent int) error {
 	// check is valid url
 	resp, err := is_valid_url(urlInput)
 	if err != nil {
-		log.Fatal(err.Error())
+		return err
 	}
 
 	// get content length
 	contentLength := int(resp.ContentLength)
 	if contentLength <= 0 {
-		log.Fatal(errors.New("server sent invalid Content-Length Header"))
+		return errors.New("server sent invalid Content-Length Header")
 	}
 
 	// create file
 	filename := path.Base(resp.Request.URL.Path)
 	f, err := utils.CreateFile(filename)
 	if err != nil {
-		log.Fatal(err.Error())
+		return err
 	}
 	defer f.Close()
 
@@ -95,13 +100,30 @@ func comot(urlInput string, concurrent int) {
 
 	tracker := make(map[int]int)
 	for i := range counterStream {
-		key := i.ID - 1
-		tracker[key] += i.Data
-		bars[key].Set(tracker[key])
+		tracker[i.ID] += i.Data
+		bars[i.ID].Set(tracker[i.ID])
 	}
+
+	inCompleteDownload := false
+	for key, value := range tracker {
+		if value < (limitOfssetData[key].Limit - limitOfssetData[key].Offset) {
+			inCompleteDownload = true
+		}
+	}
+
+	if inCompleteDownload {
+		utils.WritePartFile(tracker, filename, limitOfssetData)
+	}
+
+	return nil
 }
 
 func main() {
+	err := utils.DeletePartFile()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
 	var urlInput string
 	var concurrent int
 	flag.StringVar(&urlInput, "url", "", "url")
@@ -112,10 +134,13 @@ func main() {
 		log.Fatal("url cannot be empty")
 	}
 
-	_, err := url.ParseRequestURI(urlInput)
+	_, err = url.ParseRequestURI(urlInput)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 
-	comot(urlInput, concurrent)
+	err = comot(urlInput, concurrent)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 }
