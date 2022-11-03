@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"path"
 	"sync"
 
@@ -28,6 +30,7 @@ func worker(wg *sync.WaitGroup, counterStream chan utils.CounterStream, workerID
 		return err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, limit))
+	// client := &http.Client{Timeout: 5 * time.Second}
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -87,6 +90,19 @@ func comot(urlInput string, concurrent int) error {
 	limitOfssetData := utils.CountLimitOffset(contentLength, concurrent)
 	bars := utils.SetupProgressBar(concurrent, limitOfssetData)
 
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt)
+
+	tracker := make(map[int]int)
+	// handle ctrl + c
+	go func() {
+		select {
+		case <-c:
+			utils.WritePartFile(tracker, filename, limitOfssetData)
+			os.Exit(1)
+		}
+	}()
+
 	// run worker
 	go func() {
 		defer close(counterStream)
@@ -98,7 +114,6 @@ func comot(urlInput string, concurrent int) error {
 		wg.Wait()
 	}()
 
-	tracker := make(map[int]int)
 	for i := range counterStream {
 		tracker[i.ID] += i.Data
 		bars[i.ID].Set(tracker[i.ID])
@@ -119,11 +134,6 @@ func comot(urlInput string, concurrent int) error {
 }
 
 func main() {
-	err := utils.DeletePartFile()
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
 	var urlInput string
 	var concurrent int
 	flag.StringVar(&urlInput, "url", "", "url")
@@ -134,7 +144,7 @@ func main() {
 		log.Fatal("url cannot be empty")
 	}
 
-	_, err = url.ParseRequestURI(urlInput)
+	_, err := url.ParseRequestURI(urlInput)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
