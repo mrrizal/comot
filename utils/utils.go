@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -163,4 +164,31 @@ func WritePartFile(tracker map[int]int, filename string, limitfOffsetData map[in
 		}
 	}
 	return nil
+}
+
+func IsDownloadComplete(filename string, tracker map[int]int, limitOffsetData map[int]LimitOffsetData) (bool, error) {
+	isDownloadComplete := false
+	for key, value := range tracker {
+		if value < (limitOffsetData[key].Limit - limitOffsetData[key].Offset) {
+			isDownloadComplete = true
+		}
+	}
+
+	if isDownloadComplete {
+		WritePartFile(tracker, filename, limitOffsetData)
+	} else {
+		err := DeletePartFile()
+		if err != nil {
+			return false, err
+		}
+	}
+	return isDownloadComplete, nil
+}
+
+func GetContentLenght(resp *http.Response) (int, error) {
+	contentLength := int(resp.ContentLength)
+	if contentLength <= 0 {
+		return 0, errors.New("server sent invalid Content-Length Header")
+	}
+	return contentLength, nil
 }

@@ -16,11 +16,6 @@ import (
 	"github.com/mrrizal/comot/utils"
 )
 
-type Tracker struct {
-	SaveToFile bool
-	Tracker    map[int]int
-}
-
 func worker(wg *sync.WaitGroup, counterStream chan utils.CounterStream, workerID int, w io.WriterAt, urlInput string,
 	off, limit int) error {
 	defer wg.Done()
@@ -73,9 +68,9 @@ func comot(urlInput string, concurrent int) error {
 	}
 
 	// get content length
-	contentLength := int(resp.ContentLength)
-	if contentLength <= 0 {
-		return errors.New("server sent invalid Content-Length Header")
+	contentLength, err := utils.GetContentLenght(resp)
+	if err != nil {
+		return err
 	}
 
 	// create file
@@ -86,10 +81,10 @@ func comot(urlInput string, concurrent int) error {
 	}
 	defer f.Close()
 
+	// setup
 	counterStream := make(chan utils.CounterStream)
 	hasPartFile := utils.HasPartFile(filename, concurrent)
 	limitOffsetData := utils.CountLimitOffset(contentLength, concurrent)
-
 	var partFileData map[int]utils.LimitOffsetData
 	if hasPartFile {
 		partFileData, err = utils.ParsePartFile(filename, concurrent)
@@ -97,14 +92,12 @@ func comot(urlInput string, concurrent int) error {
 			return err
 		}
 	}
-
 	bars := utils.SetupProgressBar(concurrent, limitOffsetData)
 
+	// handle ctrl + c
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt)
-
 	tracker := make(map[int]int)
-	// handle ctrl + c
 	go func() {
 		select {
 		case <-c:
@@ -131,6 +124,7 @@ func comot(urlInput string, concurrent int) error {
 		wg.Wait()
 	}()
 
+	// filling progress bar
 	for i := range counterStream {
 		if hasPartFile {
 			if bars[i.ID].Current() == 0 {
@@ -143,20 +137,10 @@ func comot(urlInput string, concurrent int) error {
 		bars[i.ID].Set(tracker[i.ID])
 	}
 
-	inCompleteDownload := false
-	for key, value := range tracker {
-		if value < (limitOffsetData[key].Limit - limitOffsetData[key].Offset) {
-			inCompleteDownload = true
-		}
-	}
-
-	if inCompleteDownload {
-		utils.WritePartFile(tracker, filename, limitOffsetData)
-	} else {
-		err := utils.DeletePartFile()
-		if err != nil {
-			return err
-		}
+	// it's handle to decide should i write part file or not.
+	_, err = utils.IsDownloadComplete(filename, tracker, limitOffsetData)
+	if err != nil {
+		return err
 	}
 
 	return nil
