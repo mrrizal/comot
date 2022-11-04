@@ -25,7 +25,6 @@ func worker(wg *sync.WaitGroup, counterStream chan utils.CounterStream, workerID
 		return err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, limit))
-	// client := &http.Client{Timeout: 5 * time.Second}
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
