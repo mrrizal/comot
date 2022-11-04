@@ -100,15 +100,23 @@ func CountLimitOffset(contentLength, concurrent int) map[int]LimitOffsetData {
 	result := make(map[int]LimitOffsetData)
 	chunkSize := contentLength / concurrent
 	counter := 0
-	for i := 0; i < contentLength; i += chunkSize {
-		offset := i
-		limit := i + chunkSize
+
+	for i := 0; i < concurrent; i++ {
+		offset := counter
+		limit := counter + chunkSize
 		if limit > contentLength {
 			limit = contentLength
 		}
-		result[counter] = LimitOffsetData{Offset: offset, Limit: limit}
-		counter++
+
+		if i == concurrent-1 {
+			if limit < contentLength {
+				limit = contentLength
+			}
+		}
+		result[i] = LimitOffsetData{Offset: offset, Limit: limit}
+		counter += chunkSize
 	}
+
 	return result
 }
 
