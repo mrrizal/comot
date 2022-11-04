@@ -1,9 +1,15 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gosuri/uiprogress"
@@ -46,10 +52,54 @@ func CreateFile(filename string) (*os.File, error) {
 	return f, err
 }
 
+func HasPartFile(filename string, concurrent int) bool {
+	results := []bool{}
+	for i := 0; i < concurrent; i++ {
+		partFilename := fmt.Sprintf("%s_%d.part", filename, i)
+		if _, err := os.Stat(partFilename); errors.Is(err, os.ErrNotExist) {
+			results = append(results, false)
+		} else {
+			results = append(results, true)
+		}
+	}
+
+	for _, result := range results {
+		if result && (len(results) == concurrent) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func ParsePartFile(filename string, concurrent int) (map[int]LimitOffsetData, error) {
+	result := make(map[int]LimitOffsetData)
+	for i := 0; i < concurrent; i++ {
+		partFilename := fmt.Sprintf("%s_%d.part", filename, i)
+		data, err := ioutil.ReadFile(partFilename)
+		if err != nil {
+			return nil, err
+		}
+
+		offset, err := strconv.Atoi(strings.Split(string(data), ",")[0])
+		if err != nil {
+			return nil, err
+		}
+
+		limit, err := strconv.Atoi(strings.Split(string(data), ",")[1])
+		if err != nil {
+			return nil, err
+		}
+
+		result[i] = LimitOffsetData{Offset: offset, Limit: limit}
+	}
+	return result, nil
+}
+
 func CountLimitOffset(contentLength, concurrent int) map[int]LimitOffsetData {
 	result := make(map[int]LimitOffsetData)
 	chunkSize := contentLength / concurrent
-	counter := 1
+	counter := 0
 	for i := 0; i < contentLength; i += chunkSize {
 		offset := i
 		limit := i + chunkSize
@@ -72,11 +122,73 @@ func SetupProgressBar(concurrent int, limitOffsetData map[int]LimitOffsetData) [
 				func(b *uiprogress.Bar) string {
 					second := time.Since(startTime).Seconds()
 					downloadSpeed := float64(b.Current()) / second / 1024
-					return fmt.Sprintf("%s %.1f kbps", fmt.Sprintf("worker %d", key), downloadSpeed)
+					return fmt.Sprintf("%s %.1f kbps", fmt.Sprintf("worker %d", key+1), downloadSpeed)
 				})
 			return bar
 		}
-		bars[key-1] = barProgress(key)
+		bars[key] = barProgress(key)
 	}
 	return bars
+}
+
+func DeletePartFile() error {
+	files, err := filepath.Glob("*.part")
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		err := os.Remove(file)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func WritePartFile(tracker map[int]int, filename string, limitfOffsetData map[int]LimitOffsetData) error {
+	for key, value := range tracker {
+		newFilename := fmt.Sprintf("%s_%d.part", filename, key)
+		f, err := CreateFile(newFilename)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		_, err = f.WriteString(
+			fmt.Sprintf("%s,%s",
+				strconv.Itoa(limitfOffsetData[key].Offset+value),
+				strconv.Itoa(limitfOffsetData[key].Limit)))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func IsDownloadComplete(filename string, tracker map[int]int, limitOffsetData map[int]LimitOffsetData) (bool, error) {
+	isDownloadComplete := false
+	for key, value := range tracker {
+		if value < (limitOffsetData[key].Limit - limitOffsetData[key].Offset) {
+			isDownloadComplete = true
+		}
+	}
+
+	if isDownloadComplete {
+		WritePartFile(tracker, filename, limitOffsetData)
+	} else {
+		err := DeletePartFile()
+		if err != nil {
+			return false, err
+		}
+	}
+	return isDownloadComplete, nil
+}
+
+func GetContentLenght(resp *http.Response) (int, error) {
+	contentLength := int(resp.ContentLength)
+	if contentLength <= 0 {
+		return 0, errors.New("server sent invalid Content-Length Header")
+	}
+	return contentLength, nil
 }
