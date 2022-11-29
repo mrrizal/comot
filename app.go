@@ -8,8 +8,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"path"
 	"sync"
 
@@ -59,6 +57,51 @@ func is_valid_url(urlInput string) (*http.Response, error) {
 	return resp, nil
 }
 
+func runWorker(counterStream chan utils.CounterStream, hasPartFile bool, partFileData map[int]utils.LimitOffsetData,
+	filename, urlInput string, limitOffsetData map[int]utils.LimitOffsetData) error {
+	f, err := utils.CreateFile(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// run worker
+	defer close(counterStream)
+	var wg sync.WaitGroup
+	var data map[int]utils.LimitOffsetData
+	if hasPartFile {
+		data = partFileData
+	} else {
+		data = limitOffsetData
+	}
+
+	for key, value := range data {
+		wg.Add(1)
+		go worker(&wg, counterStream, key, f, urlInput, value.Offset, value.Limit)
+	}
+	wg.Wait()
+	return nil
+}
+
+func fillingProgressBar(concurrent int, limitOffsetData map[int]utils.LimitOffsetData,
+	counterStream chan utils.CounterStream, hasPartFile bool, partFileData map[int]utils.LimitOffsetData,
+	tracker map[int]int) {
+	// create progress bar
+	bars := utils.SetupProgressBar(concurrent, limitOffsetData)
+
+	// filling progress bar
+	for i := range counterStream {
+		if hasPartFile {
+			if bars[i.ID].Current() == 0 {
+				tracker[i.ID] += partFileData[i.ID].Offset - limitOffsetData[i.ID].Offset
+				bars[i.ID].Set(partFileData[i.ID].Offset - limitOffsetData[i.ID].Offset)
+			}
+		}
+		tracker[i.ID] += i.Data
+		bars[i.ID].Set(tracker[i.ID])
+	}
+}
+
 func comot(urlInput string, concurrent int) error {
 	// check is valid url
 	resp, err := is_valid_url(urlInput)
@@ -74,11 +117,6 @@ func comot(urlInput string, concurrent int) error {
 
 	// create file
 	filename := path.Base(resp.Request.URL.Path)
-	f, err := utils.CreateFile(filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 
 	// setup
 	counterStream := make(chan utils.CounterStream)
@@ -91,57 +129,25 @@ func comot(urlInput string, concurrent int) error {
 			return err
 		}
 	}
-	bars := utils.SetupProgressBar(concurrent, limitOffsetData)
-
-	// handle ctrl + c
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt)
-	tracker := make(map[int]int)
-	go func() {
-		select {
-		case <-c:
-			utils.WritePartFile(tracker, filename, limitOffsetData)
-			os.Exit(1)
-		}
-	}()
+	tracker := utils.HandleCancelation(filename, limitOffsetData)
 
 	// run worker
 	go func() {
-		defer close(counterStream)
-		var wg sync.WaitGroup
-		var data map[int]utils.LimitOffsetData
-		if hasPartFile {
-			data = partFileData
-		} else {
-			data = limitOffsetData
-		}
-
-		for key, value := range data {
-			wg.Add(1)
-			go worker(&wg, counterStream, key, f, urlInput, value.Offset, value.Limit)
-		}
-		wg.Wait()
+		err = runWorker(counterStream, hasPartFile, partFileData, filename, urlInput, limitOffsetData)
 	}()
 
-	// filling progress bar
-	for i := range counterStream {
-		if hasPartFile {
-			if bars[i.ID].Current() == 0 {
-				tracker[i.ID] += partFileData[i.ID].Offset - limitOffsetData[i.ID].Offset
-				bars[i.ID].Set(partFileData[i.ID].Offset - limitOffsetData[i.ID].Offset)
-			}
-		}
-
-		tracker[i.ID] += i.Data
-		bars[i.ID].Set(tracker[i.ID])
+	if err != nil {
+		return err
 	}
+
+	// filling progress bar
+	fillingProgressBar(concurrent, limitOffsetData, counterStream, hasPartFile, partFileData, tracker)
 
 	// it's handle to decide should i write part file or not.
 	_, err = utils.IsDownloadComplete(filename, tracker, limitOffsetData)
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 

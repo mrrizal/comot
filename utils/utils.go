@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -199,4 +200,19 @@ func GetContentLenght(resp *http.Response) (int, error) {
 		return 0, errors.New("server sent invalid Content-Length Header")
 	}
 	return contentLength, nil
+}
+
+func HandleCancelation(filename string, limitOffsetData map[int]LimitOffsetData) map[int]int {
+	// handle ctrl + c
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt)
+	tracker := make(map[int]int)
+	go func() {
+		select {
+		case <-c:
+			WritePartFile(tracker, filename, limitOffsetData)
+			os.Exit(1)
+		}
+	}()
+	return tracker
 }
